@@ -93,6 +93,12 @@ if not hasattr(neuron.h, 'AlphaISyn'):
 # pynest, brunel_alpha_nest.py, adapted from the NEST v2.4.1 release. This will
 # not execute the network model, but see below.
 
+if not os.path.exists("simulation_output_example_brunel/sim_scripts"):
+    os.makedirs("simulation_output_example_brunel/sim_scripts")
+if not os.path.exists("simulation_output_example_brunel/cells"):
+    os.makedirs("simulation_output_example_brunel/cells")
+if not os.path.exists("simulation_output_example_brunel/populations"):
+    os.makedirs("simulation_output_example_brunel/populations")
 
 # set up file destinations differentiating between certain output
 PS = ParameterSet(dict(
@@ -300,7 +306,7 @@ if properrun:
 
 if properrun:
     # execute network simulation
-    BN.simulate()
+    BN.simulation()
 
 # wait for the network simulation to finish, resync MPI threads
 COMM.Barrier()
