@@ -336,7 +336,7 @@ class CachedNetwork(object):
             yticks = []
             yticklabels = []
             for i, X in enumerate(self.X):
-                if y[X] != []:
+                if isinstance(y, dict) and X in y and isinstance(y[X], list) and len(y[X]) != 0:
                     yticks.append(y[X].mean() + yoffset[i])
                     yticklabels.append(self.X[i])
             ax.set_yticks(yticks)
