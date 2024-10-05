@@ -39,64 +39,15 @@ predictions using the present scheme, running the model on nothing but a large-
 scale compute facility is strongly discouraged.
 '''
 
-import brunel_alpha_nest_topo_exp as BN
 import os
+import h5py
 import numpy as np
-if 'DISPLAY' not in os.environ:
-    import matplotlib
-    matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from time import time
-import nest  # not used here, but for running network sim in parallel with MPI
-from hybridLFPy import PostProcess, setup_file_dest, CachedTopoNetwork, \
-    TopoPopulation
-# from meso_analysis import CachedTopoNetwork, TopoPopulation
+import brunel_alpha_nest_topo_exp as BN
 from parameters import ParameterSet
-import h5py
-import lfpykit
-import neuron
-from mpi4py import MPI
+from hybridLFPy import CachedTopoNetwork
 
-
-# matplotlib settings ###########################################
-plt.close('all')
-plt.rcParams.update({'figure.figsize': [10.0, 8.0]})
-
-
-# set some seed values
-SEED = 12345678
-SIMULATIONSEED = 12345678
-np.random.seed(SEED)
-
-
-# Initialization of MPI stuff ############################
-COMM = MPI.COMM_WORLD
-SIZE = COMM.Get_size()
-RANK = COMM.Get_rank()
-
-# if True, execute full model. If False, do only the plotting.
-# Simulation results must exist.
-PROPERRUN = True
-
-
-# check if mod file for synapse model specified in alphaisyn.mod is loaded
-if not hasattr(neuron.h, 'AlphaISyn'):
-    if RANK == 0:
-        os.system('nrnivmodl')
-    COMM.Barrier()
-    neuron.load_mechanisms('.')
-
-
-##########################################################################
-# PARAMETERS
-##########################################################################
-
-# Set up parameters using the NeuroTools.parameters.ParameterSet class.
-
-# Access parameters defined in example script implementing the network using
-# pynest, brunel_alpha_nest_topo.py, adapted from the NEST v2.4.1 release.
-# This will not execute the network model, but see below.
 
 
 # set up file destinations differentiating between certain output
@@ -314,27 +265,6 @@ PS.update(dict(
     mapping_Yy=list(zip(PS.X, PS.X))
 ))
 
-#########################################################################
-# MAIN simulation procedure                                             #
-#########################################################################
-
-# tic toc
-tic = time()
-
-# ######## Perform network simulation #####################################
-if PROPERRUN:
-    # set up the file destination, removing old results by default
-    setup_file_dest(PS, clearDestination=True)
-
-if PROPERRUN:
-    # run network simulation
-    BN.run_model()
-
-
-# wait for the network simulation to finish, resync MPI threads
-COMM.Barrier()
-
-
 # Create an object representation containing the spiking activity of the
 # network simulation output that uses sqlite3. Again, kwargs are derived from
 # the brunel network instance.
@@ -349,146 +279,6 @@ networkSim = CachedTopoNetwork(
     cmap='bwr_r',
     skiprows=3,
 )
-
-toc = time() - tic
-print('NEST simulation and gdf file processing done in  %.3f seconds' % toc)
-
-
-##############################################################################
-# Create predictor for extracellular potentials that utilize periodic
-# boundary conditions in 2D, similar to network connectivity
-##############################################################################
-class PeriodicLFP(lfpykit.RecExtElectrode):
-    '''
-    Modified version of lfpykit.RecExtElectrode that incorporates periodic
-    boundary conditions for electrostatic forward models in 2D.
-
-    Parameters
-    ----------
-    side_length: float > 0
-        periodicity along lateral x and y direction
-    order: int >= 1
-
-    **kwargs:
-        lfpykit.RecExtElectrode parameters
-    '''
-
-    def __init__(self, side_length=4000., order=1, **kwargs):
-        """Initialize RecExtElectrode class"""
-        super().__init__(**kwargs)
-        self._get_transformation_matrix = super().get_transformation_matrix
-
-        self.side_length = side_length
-        self.order = order
-
-    def get_transformation_matrix(self):
-        '''
-        Get linear response matrix
-
-        Returns
-        -------
-        response_matrix: ndarray
-            shape (n_contacts, n_seg) ndarray
-
-        Raises
-        ------
-        AttributeError
-            if `cell is None`
-        '''
-        if self.cell is None:
-            raise AttributeError(
-                '{}.cell is None'.format(self.__class__.__name__))
-        M = np.zeros((self.x.size, self.cell.totnsegs))
-        for i in range(-self.order, self.order + 1):
-            for j in range(-self.order, self.order + 1):
-                x = self.cell.x.copy()
-                y = self.cell.y.copy()
-                self.cell.x = self.cell.x + i * self.side_length
-                self.cell.y = self.cell.y + j * self.side_length
-                M += self._get_transformation_matrix()
-                self.cell.x = x
-                self.cell.y = y
-
-        return M
-
-
-# #### Set up LFPykit measurement probes for LFPs and CSDs
-if PROPERRUN:
-    probes = []
-    probes.append(PeriodicLFP(cell=None, **PS.electrodeParams))
-
-###############################################
-# Set up populations                          #
-###############################################
-
-if PROPERRUN:
-    # iterate over each cell type, and create populationulation object
-    for i, Y in enumerate(PS.X):
-        # create population:
-        pop = TopoPopulation(
-            cellParams=PS.cellParams[Y],
-            rand_rot_axis=PS.rand_rot_axis[Y],
-            simulationParams=PS.simulationParams,
-            populationParams=PS.populationParams[Y],
-            y=Y,
-            layerBoundaries=PS.layerBoundaries,
-            savelist=PS.savelist,
-            savefolder=PS.savefolder,
-            probes=probes,
-            dt_output=PS.dt_output,
-            POPULATIONSEED=SIMULATIONSEED + i,
-            X=PS.X,
-            networkSim=networkSim,
-            k_yXL=PS.k_yXL[Y],
-            synParams=PS.synParams[Y],
-            synDelayLoc=PS.synDelayLoc[Y],
-            synDelayScale=PS.synDelayScale[Y],
-            J_yX=PS.J_yX[Y],
-            # TopoPopulation kwargs
-            topology_connections=PS.topology_connections,
-            # time res
-        )
-
-        # run population simulation and collect the data
-        pop.run()
-        pop.collect_data()
-
-        # object no longer needed
-        del pop
-
-
-####### Postprocess the simulation output ################################
-
-
-# reset seed, but output should be deterministic from now on
-np.random.seed(SIMULATIONSEED)
-
-if PROPERRUN:
-    # do some postprocessing on the collected data, i.e., superposition
-    # of population LFPs, CSDs etc
-    postproc = PostProcess(y=PS.X,
-                           dt_output=PS.dt_output,
-                           savefolder=PS.savefolder,
-                           mapping_Yy=PS.mapping_Yy,
-                           savelist=PS.savelist,
-                           probes=probes,
-                           cells_subfolder=PS.cells_subfolder,
-                           populations_subfolder=PS.populations_subfolder,
-                           figures_subfolder=PS.figures_subfolder
-                           )
-
-    # run through the procedure
-    postproc.run()
-
-    # create tar-archive with output for plotting, ssh-ing etc.
-    postproc.create_tar_archive()
-
-
-COMM.Barrier()
-
-# tic toc
-print('Execution time: %.3f seconds' % (time() - tic))
-
 
 ##########################################################################
 # Create set of plots from simulation output
@@ -739,14 +529,9 @@ def network_lfp_activity_animation(PS, networkSim, T=(
                 'mpeg4'],
         )
     # plt.show()
+#
 
+network_activity_animation(PS, networkSim, save_anim=True)
+lfp_activity_animation(PS, networkSim, save_anim=True)
+network_lfp_activity_animation(PS, networkSim, save_anim=True)
 
-if RANK == 0:
-    network_activity_animation(PS, networkSim, save_anim=True)
-    # plt.show()
-
-if RANK == 0:
-    lfp_activity_animation(PS, networkSim, save_anim=True)
-
-if RANK == 0:
-    network_lfp_activity_animation(PS, networkSim, save_anim=True)

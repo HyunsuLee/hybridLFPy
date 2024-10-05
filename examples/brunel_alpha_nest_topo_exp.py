@@ -220,6 +220,7 @@ def run_model():
     nest.SetKernelStatus({"resolution": dt,
                           "print_time": True,
                           "overwrite_files": True, })
+    nest.local_num_threads = 1
 
     print("Building network")
 
